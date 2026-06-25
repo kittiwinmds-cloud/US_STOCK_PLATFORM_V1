@@ -70,59 +70,107 @@ def send_discord(message):
         print(e)
 
 # ==================================
-# SCANNER (ORIGINAL LOGIC)
+# SCAN FUNCTION
 # ==================================
 
-def scan(symbol):
-    df = yf.download(symbol, interval="1h", period="60d", progress=False)
+def scan_stock(symbol):
 
-    if df.empty:
+    try:
+
+        df = yf.download(
+            symbol,
+            interval="1h",
+            period="60d",
+            progress=False
+        )
+
+        if df.empty:
+            return None
+
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        df.dropna(inplace=True)
+
+        df["ema_200"] = ta.trend.ema_indicator(
+            df["Close"],
+            window=200
+        )
+
+        df["bb_upper"] = ta.volatility.bollinger_hband(
+            df["Close"]
+        )
+
+        df["bb_lower"] = ta.volatility.bollinger_lband(
+            df["Close"]
+        )
+
+        df["vol_sma"] = (
+            df["Volume"]
+            .rolling(20)
+            .mean()
+        )
+
+        df.dropna(inplace=True)
+
+        if len(df) < 50:
+            return None
+
+        last = df.iloc[-2]
+
+        high_volume = (
+            last["Volume"]
+            >
+            last["vol_sma"] * 1.2
+        )
+
+        volume_ratio = round(
+            last["Volume"]
+            /
+            last["vol_sma"],
+            2
+        )
+
+        # LONG
+
+        if (
+            last["Close"] > last["ema_200"]
+            and
+            last["Close"] > last["bb_upper"]
+            and
+            high_volume
+        ):
+
+            return {
+                "Symbol": symbol,
+                "Signal": "LONG",
+                "Price": round(last["Close"], 2),
+                "Volume Ratio": volume_ratio
+            }
+
+        # SHORT
+
+        elif (
+            last["Close"] < last["ema_200"]
+            and
+            last["Close"] < last["bb_lower"]
+            and
+            high_volume
+        ):
+
+            return {
+                "Symbol": symbol,
+                "Signal": "SHORT",
+                "Price": round(last["Close"], 2),
+                "Volume Ratio": volume_ratio
+            }
+
         return None
 
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+    except Exception as e:
 
-    df.dropna(inplace=True)
-
-    df["ema_200"] = ta.trend.ema_indicator(df["Close"], window=200)
-    df["bb_upper"] = ta.volatility.bollinger_hband(df["Close"])
-    df["bb_lower"] = ta.volatility.bollinger_lband(df["Close"])
-    df["vol_sma"] = df["Volume"].rolling(20).mean()
-
-    df.dropna(inplace=True)
-
-    if len(df) < 50:
+        print(symbol, e)
         return None
-
-    last = df.iloc[-2]
-
-    high_volume = last["Volume"] > last["vol_sma"] * 1.2
-
-    # =========================
-    # LONG SIGNAL
-    # =========================
-    if last["Close"] > last["ema_200"] and last["Close"] > last["bb_upper"] and high_volume:
-
-        if last_signal.get(symbol) != "LONG":
-            send_discord(symbol, "LONG", last["Close"])
-            last_signal[symbol] = "LONG"
-
-        return (symbol, "LONG")
-
-    # =========================
-    # SHORT SIGNAL
-    # =========================
-    elif last["Close"] < last["ema_200"] and last["Close"] < last["bb_lower"] and high_volume:
-
-        if last_signal.get(symbol) != "SHORT":
-            send_discord(symbol, "SHORT", last["Close"])
-            last_signal[symbol] = "SHORT"
-
-        return (symbol, "SHORT")
-
-    return None
-
-
 
 # ==================================
 # STREAMLIT
@@ -130,7 +178,7 @@ def scan(symbol):
 
 def run_scanner():
 
-    st.header("🚀 US Stock Scanner")
+    st.header("🚀 US Stock Scanner V2")
 
     col1, col2 = st.columns(2)
 
@@ -138,7 +186,7 @@ def run_scanner():
 
         run = st.button(
             "🚀 Run Scan",
-            key="scan_button"
+            use_container_width=True
         )
 
     with col2:
@@ -148,21 +196,24 @@ def run_scanner():
         )
 
     # ==================================
+    # SESSION STATE
+    # ==================================
+
+    if "scanner_results" not in st.session_state:
+        st.session_state.scanner_results = pd.DataFrame()
+
+    # ==================================
     # AUTO REFRESH
     # ==================================
 
     if auto_refresh:
 
         if "refresh_time" not in st.session_state:
-
             st.session_state.refresh_time = time.time()
 
         now = time.time()
 
-        if (
-            now -
-            st.session_state.refresh_time
-        ) > 300:
+        if now - st.session_state.refresh_time > 300:
 
             st.session_state.refresh_time = now
             st.rerun()
@@ -197,23 +248,24 @@ def run_scanner():
                 ascending=False
             )
 
-        st.session_state["scanner_results"] = df_result
+        st.session_state.scanner_results = df_result
 
-        # DISCORD
+        # ==================================
+        # DISCORD ALERT
+        # ==================================
 
         if len(df_result):
 
             msg = "🔥 TOP SETUPS\n\n"
 
             for _, row in (
-                df_result
-                .head(5)
-                .iterrows()
+                df_result.head(10).iterrows()
             ):
 
                 msg += (
                     f"{row['Symbol']} | "
                     f"{row['Signal']} | "
+                    f"Price {row['Price']} | "
                     f"Vol {row['Volume Ratio']}x\n"
                 )
 
@@ -223,82 +275,70 @@ def run_scanner():
     # DISPLAY
     # ==================================
 
-    if "scanner_results" in st.session_state:
+    df_result = st.session_state.scanner_results
 
-        df_result = st.session_state[
-            "scanner_results"
-        ]
+    if len(df_result):
 
-        if len(df_result):
+        st.success(
+            f"Found {len(df_result)} setups"
+        )
 
-            st.success(
-                f"Found {len(df_result)} setups"
+        long_df = (
+            df_result[
+                df_result["Signal"] == "LONG"
+            ]
+            .sort_values(
+                "Volume Ratio",
+                ascending=False
             )
+        )
 
-            long_df = (
-                df_result[
-                    df_result["Signal"]
-                    == "LONG"
-                ]
-                .sort_values(
-                    "Volume Ratio",
-                    ascending=False
-                )
+        short_df = (
+            df_result[
+                df_result["Signal"] == "SHORT"
+            ]
+            .sort_values(
+                "Volume Ratio",
+                ascending=False
             )
+        )
 
-            short_df = (
-                df_result[
-                    df_result["Signal"]
-                    == "SHORT"
-                ]
-                .sort_values(
-                    "Volume Ratio",
-                    ascending=False
-                )
-            )
+        st.subheader("🚀 TOP 10 LONG")
 
-            st.subheader(
-                "🚀 TOP 10 LONG"
-            )
+        st.dataframe(
+            long_df.head(10),
+            use_container_width=True
+        )
 
-            st.dataframe(
-                long_df.head(10),
-                use_container_width=True
-            )
+        st.subheader("🔻 TOP 10 SHORT")
 
-            st.subheader(
-                "🔻 TOP 10 SHORT"
-            )
+        st.dataframe(
+            short_df.head(10),
+            use_container_width=True
+        )
 
-            st.dataframe(
-                short_df.head(10),
-                use_container_width=True
-            )
+        st.subheader("📊 ALL RESULTS")
 
-            st.subheader(
-                "📊 ALL RESULTS"
-            )
+        st.dataframe(
+            df_result,
+            use_container_width=True
+        )
 
-            st.dataframe(
-                df_result,
-                use_container_width=True
-            )
+        csv = (
+            df_result
+            .to_csv(index=False)
+            .encode("utf-8")
+        )
 
-            csv = (
-                df_result
-                .to_csv(index=False)
-                .encode()
-            )
+        st.download_button(
+            "📥 Export CSV",
+            csv,
+            file_name="scanner_results.csv",
+            mime="text/csv"
+        )
 
-            st.download_button(
-                "📥 Export CSV",
-                csv,
-                "scanner_results.csv",
-                "text/csv"
-            )
+    else:
 
-        else:
-
-            st.warning(
-                "No setup found ❌"
-            )
+        st.warning(
+            "No setup found ❌"
+        )
