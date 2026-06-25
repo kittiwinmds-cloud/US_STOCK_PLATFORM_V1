@@ -50,7 +50,7 @@ SYMBOLS = [
 ]
 
 # ==================================
-# DISCORD FUNCTION
+# DISCORD
 # ==================================
 
 def send_discord(message):
@@ -59,16 +59,18 @@ def send_discord(message):
         return
 
     try:
+
         requests.post(
             DISCORD_WEBHOOK,
             json={"content": message},
             timeout=10
         )
+
     except Exception as e:
         print(e)
 
 # ==================================
-# SCAN STOCK
+# SCANNER (ORIGINAL LOGIC)
 # ==================================
 
 def scan_stock(symbol):
@@ -77,8 +79,8 @@ def scan_stock(symbol):
 
         df = yf.download(
             symbol,
-            period="60d",
             interval="1h",
+            period="60d",
             auto_adjust=True,
             progress=False
         )
@@ -91,20 +93,20 @@ def scan_stock(symbol):
 
         df.dropna(inplace=True)
 
-        df["EMA200"] = ta.trend.ema_indicator(
+        df["ema_200"] = ta.trend.ema_indicator(
             df["Close"],
             window=200
         )
 
-        df["BB_UPPER"] = ta.volatility.bollinger_hband(
+        df["bb_upper"] = ta.volatility.bollinger_hband(
             df["Close"]
         )
 
-        df["BB_LOWER"] = ta.volatility.bollinger_lband(
+        df["bb_lower"] = ta.volatility.bollinger_lband(
             df["Close"]
         )
 
-        df["VOL20"] = (
+        df["vol_sma"] = (
             df["Volume"]
             .rolling(20)
             .mean()
@@ -117,49 +119,53 @@ def scan_stock(symbol):
 
         last = df.iloc[-2]
 
-        score = 0
-
         high_volume = (
             last["Volume"]
-            > last["VOL20"] * 1.2
+            > last["vol_sma"] * 1.2
         )
 
-        if high_volume:
-            score += 30
+        volume_ratio = round(
+            last["Volume"] /
+            last["vol_sma"],
+            2
+        )
 
         # LONG
 
-        if last["Close"] > last["EMA200"]:
-            score += 30
-
-        if last["Close"] > last["BB_UPPER"]:
-            score += 40
+        if (
+            last["Close"] > last["ema_200"]
+            and
+            last["Close"] > last["bb_upper"]
+            and
+            high_volume
+        ):
 
             return {
                 "Symbol": symbol,
                 "Signal": "LONG",
-                "Score": score,
-                "Price": round(last["Close"], 2)
+                "Price": round(
+                    last["Close"],2
+                ),
+                "Volume Ratio": volume_ratio
             }
 
         # SHORT
 
-        score = 0
-
-        if high_volume:
-            score += 30
-
-        if last["Close"] < last["EMA200"]:
-            score += 30
-
-        if last["Close"] < last["BB_LOWER"]:
-            score += 40
+        elif (
+            last["Close"] < last["ema_200"]
+            and
+            last["Close"] < last["bb_lower"]
+            and
+            high_volume
+        ):
 
             return {
                 "Symbol": symbol,
                 "Signal": "SHORT",
-                "Score": score,
-                "Price": round(last["Close"], 2)
+                "Price": round(
+                    last["Close"],2
+                ),
+                "Volume Ratio": volume_ratio
             }
 
         return None
@@ -168,40 +174,51 @@ def scan_stock(symbol):
         return None
 
 # ==================================
-# MAIN
+# STREAMLIT
 # ==================================
 
 def run_scanner():
 
-    st.header("🚀 US Stock Scanner PRO")
+    st.header("🚀 US Stock Scanner")
 
     col1, col2 = st.columns(2)
 
     with col1:
+
         run = st.button(
             "🚀 Run Scan",
-            key="scanner_btn"
+            key="scan_button"
         )
 
     with col2:
+
         auto_refresh = st.checkbox(
             "🔄 Auto Refresh 5 Min"
         )
 
+    # ==================================
     # AUTO REFRESH
+    # ==================================
 
     if auto_refresh:
 
         if "refresh_time" not in st.session_state:
+
             st.session_state.refresh_time = time.time()
 
         now = time.time()
 
-        if now - st.session_state.refresh_time > 300:
+        if (
+            now -
+            st.session_state.refresh_time
+        ) > 300:
+
             st.session_state.refresh_time = now
             st.rerun()
 
+    # ==================================
     # RUN SCAN
+    # ==================================
 
     if run:
 
@@ -209,12 +226,12 @@ def run_scanner():
 
         progress = st.progress(0)
 
-        for i, sym in enumerate(SYMBOLS):
+        for i, symbol in enumerate(SYMBOLS):
 
-            res = scan_stock(sym)
+            result = scan_stock(symbol)
 
-            if res:
-                results.append(res)
+            if result:
+                results.append(result)
 
             progress.progress(
                 (i + 1) / len(SYMBOLS)
@@ -225,66 +242,91 @@ def run_scanner():
         if len(df_result):
 
             df_result = df_result.sort_values(
-                "Score",
+                "Volume Ratio",
                 ascending=False
             )
 
-        st.session_state["scanner"] = df_result
+        st.session_state["scanner_results"] = df_result
 
         # DISCORD
 
         if len(df_result):
 
-            msg = "🔥 TOP STOCK SETUPS\n\n"
+            msg = "🔥 TOP SETUPS\n\n"
 
             for _, row in (
-                df_result.head(5).iterrows()
+                df_result
+                .head(5)
+                .iterrows()
             ):
 
                 msg += (
                     f"{row['Symbol']} | "
                     f"{row['Signal']} | "
-                    f"Score {row['Score']}\n"
+                    f"Vol {row['Volume Ratio']}x\n"
                 )
 
             send_discord(msg)
 
+    # ==================================
     # DISPLAY
+    # ==================================
 
-    if "scanner" in st.session_state:
+    if "scanner_results" in st.session_state:
 
-        df_result = st.session_state["scanner"]
+        df_result = st.session_state[
+            "scanner_results"
+        ]
 
         if len(df_result):
 
-            st.metric(
-                "Signals Found",
-                len(df_result)
+            st.success(
+                f"Found {len(df_result)} setups"
             )
 
-            st.subheader("🏆 TOP 10 LONG")
+            long_df = (
+                df_result[
+                    df_result["Signal"]
+                    == "LONG"
+                ]
+                .sort_values(
+                    "Volume Ratio",
+                    ascending=False
+                )
+            )
 
-            long_df = df_result[
-                df_result["Signal"] == "LONG"
-            ]
+            short_df = (
+                df_result[
+                    df_result["Signal"]
+                    == "SHORT"
+                ]
+                .sort_values(
+                    "Volume Ratio",
+                    ascending=False
+                )
+            )
+
+            st.subheader(
+                "🚀 TOP 10 LONG"
+            )
 
             st.dataframe(
                 long_df.head(10),
                 use_container_width=True
             )
 
-            st.subheader("🔻 TOP 10 SHORT")
-
-            short_df = df_result[
-                df_result["Signal"] == "SHORT"
-            ]
+            st.subheader(
+                "🔻 TOP 10 SHORT"
+            )
 
             st.dataframe(
                 short_df.head(10),
                 use_container_width=True
             )
 
-            st.subheader("📊 ALL RESULTS")
+            st.subheader(
+                "📊 ALL RESULTS"
+            )
 
             st.dataframe(
                 df_result,
