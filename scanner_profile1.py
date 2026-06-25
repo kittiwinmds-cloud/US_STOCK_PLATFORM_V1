@@ -81,7 +81,6 @@ def scan_stock(symbol):
             symbol,
             interval="1h",
             period="60d",
-            auto_adjust=True,
             progress=False
         )
 
@@ -114,7 +113,7 @@ def scan_stock(symbol):
 
         df.dropna(inplace=True)
 
-        if len(df) < 250:
+        if len(df) < 50:
             return None
 
         last = df.iloc[-2]
