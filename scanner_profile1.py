@@ -73,104 +73,56 @@ def send_discord(message):
 # SCANNER (ORIGINAL LOGIC)
 # ==================================
 
-def scan_stock(symbol):
+def scan(symbol):
+    df = yf.download(symbol, interval="1h", period="60d", progress=False)
 
-    try:
-
-        df = yf.download(
-            symbol,
-            interval="1h",
-            period="60d",
-            progress=False
-        )
-
-        if df.empty:
-            return None
-
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-
-        df.dropna(inplace=True)
-
-        df["ema_200"] = ta.trend.ema_indicator(
-            df["Close"],
-            window=200
-        )
-
-        df["bb_upper"] = ta.volatility.bollinger_hband(
-            df["Close"]
-        )
-
-        df["bb_lower"] = ta.volatility.bollinger_lband(
-            df["Close"]
-        )
-
-        df["vol_sma"] = (
-            df["Volume"]
-            .rolling(20)
-            .mean()
-        )
-
-        df.dropna(inplace=True)
-
-        if len(df) < 50:
-            return None
-
-        last = df.iloc[-2]
-
-        high_volume = (
-            last["Volume"]
-            > last["vol_sma"] * 1.2
-        )
-
-        volume_ratio = round(
-            last["Volume"] /
-            last["vol_sma"],
-            2
-        )
-
-        # LONG
-
-        if (
-            last["Close"] > last["ema_200"]
-            and
-            last["Close"] > last["bb_upper"]
-            and
-            high_volume
-        ):
-
-            return {
-                "Symbol": symbol,
-                "Signal": "LONG",
-                "Price": round(
-                    last["Close"],2
-                ),
-                "Volume Ratio": volume_ratio
-            }
-
-        # SHORT
-
-        elif (
-            last["Close"] < last["ema_200"]
-            and
-            last["Close"] < last["bb_lower"]
-            and
-            high_volume
-        ):
-
-            return {
-                "Symbol": symbol,
-                "Signal": "SHORT",
-                "Price": round(
-                    last["Close"],2
-                ),
-                "Volume Ratio": volume_ratio
-            }
-
+    if df.empty:
         return None
 
-    except:
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df.dropna(inplace=True)
+
+    df["ema_200"] = ta.trend.ema_indicator(df["Close"], window=200)
+    df["bb_upper"] = ta.volatility.bollinger_hband(df["Close"])
+    df["bb_lower"] = ta.volatility.bollinger_lband(df["Close"])
+    df["vol_sma"] = df["Volume"].rolling(20).mean()
+
+    df.dropna(inplace=True)
+
+    if len(df) < 50:
         return None
+
+    last = df.iloc[-2]
+
+    high_volume = last["Volume"] > last["vol_sma"] * 1.2
+
+    # =========================
+    # LONG SIGNAL
+    # =========================
+    if last["Close"] > last["ema_200"] and last["Close"] > last["bb_upper"] and high_volume:
+
+        if last_signal.get(symbol) != "LONG":
+            send_discord(symbol, "LONG", last["Close"])
+            last_signal[symbol] = "LONG"
+
+        return (symbol, "LONG")
+
+    # =========================
+    # SHORT SIGNAL
+    # =========================
+    elif last["Close"] < last["ema_200"] and last["Close"] < last["bb_lower"] and high_volume:
+
+        if last_signal.get(symbol) != "SHORT":
+            send_discord(symbol, "SHORT", last["Close"])
+            last_signal[symbol] = "SHORT"
+
+        return (symbol, "SHORT")
+
+    return None
+
+
 
 # ==================================
 # STREAMLIT
